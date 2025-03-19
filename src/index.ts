@@ -8,7 +8,7 @@ import { db } from "./drizzle/db";
 const API_BASE_URL = "http://localhost:3000/api/timestamp-holdings";
 const BATCH_SIZE = 7; // process a week at a time
 const CONCURRENCY_LIMIT = 2; // limit concurrent api calls
-const USER_BATCH_SIZE = 5; // process 5 users at a time
+const USER_BATCH_SIZE = 2; // process 2 users at a time, greater than 2 exceeds the API rate limit
 const MAX_RETRIES = 3; // max number of retry attempts
 const RETRY_DELAY = 5000; // 5 seconds delay between retries
 

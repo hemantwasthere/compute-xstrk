@@ -1,15 +1,15 @@
 import { defineIndexer } from "@apibara/indexer";
-import { StarknetStream } from "@apibara/starknet";
-
 import { useLogger } from "@apibara/indexer/plugins";
 import { drizzleStorage } from "@apibara/plugin-drizzle";
+import { StarknetStream } from "@apibara/starknet";
 import type { ApibaraRuntimeConfig } from "apibara/types";
 import type {
   ExtractTablesWithRelations,
   TablesRelationalConfig,
 } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import type { PgDatabase, PgQueryResultHKT } from "drizzle-orm/pg-core";
-import { hash, transaction } from "starknet";
+import { hash } from "starknet";
 
 import * as schema from "../src/drizzle/schema";
 import { getDB, standardise } from "../src/utils";
@@ -75,8 +75,26 @@ export function createIndexer<
       const records: schema.UserType[] = [];
 
       for (const event of events) {
+        const userAddress = standardise(event.keys[2]);
+
+        // check if this user address already exists in the database
+        const existingUser = await database
+          .select({ id: schema.users.id })
+          .from(schema.users)
+          .where(eq(schema.users.userAddress, userAddress))
+          .limit(1)
+          .execute();
+
+        // skip this record if it's a duplicate
+        if (existingUser.length > 0) {
+          logger.info(
+            `Starknet: Skipping existing user address: ${userAddress}`
+          );
+          continue;
+        }
+
         const record: schema.UserType = {
-          userAddress: standardise(event.keys[2]),
+          userAddress,
           blockNumber: Number(header.blockNumber),
           txIndex: event.transactionIndex as number,
           eventIndex: event.eventIndex as number,
@@ -85,22 +103,27 @@ export function createIndexer<
           cursor: BigInt(header.blockNumber),
         };
 
-        logger.info(
-          `Starknet: Saving record of event index: ${record.eventIndex} ...`
-        );
+        logger.info(`Starknet: Adding new user address: ${userAddress}`);
+
         records.push(record);
       }
 
       if (records.length) {
         logger.info(
-          `Starknet: Inserting ${JSON.stringify(records.length)} records...`
+          `Starknet: Inserting ${records.length} new user records...`
         );
+
+        const result = await database
+          .insert(schema.users)
+          .values(records)
+          .execute();
+
         logger.info(
-          await database.insert(schema.users).values(records).execute()
+          `Starknet: Successfully inserted ${records.length} new users!`
         );
-        logger.info(
-          `Starknet: Inserted ${JSON.stringify(records.length)} records !`
-        );
+        logger.info(result);
+      } else {
+        logger.info("Starknet: No new users to insert");
       }
     },
   });

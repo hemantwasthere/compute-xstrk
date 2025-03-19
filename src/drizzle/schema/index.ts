@@ -13,7 +13,7 @@ export const users = pgTable("users", {
 
 export const xstrk_holdings = pgTable("xstrk_holdings", {
   id: serial("id").primaryKey(),
-  userAddress: text("user_address").notNull(),
+  userAddress: text("user_address").notNull().unique(),
   blockNumber: integer("block_number").notNull(),
   vesuAmount: text("vesu_amount").notNull(),
   ekuboAmount: text("ekubo_amount").notNull(),
