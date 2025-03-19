@@ -6,82 +6,100 @@ import * as schema from "../src/drizzle/schema";
 import { db } from "./drizzle/db";
 
 const API_BASE_URL = "http://localhost:3000/api/timestamp-holdings";
-const BATCH_SIZE = 7; // Process a week at a time
-const CONCURRENCY_LIMIT = 3; // Limit concurrent API calls
-const USER_BATCH_SIZE = 5; // Process 5 users at a time
+const BATCH_SIZE = 7; // process a week at a time
+const CONCURRENCY_LIMIT = 2; // limit concurrent api calls
+const USER_BATCH_SIZE = 5; // process 5 users at a time
+const MAX_RETRIES = 3; // max number of retry attempts
+const RETRY_DELAY = 5000; // 5 seconds delay between retries
 
-async function fetchHoldingsForDateAndUser(
-  date: Date,
-  userAddr: string
+async function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function fetchHoldingsWithRetry(
+  userAddr: string,
+  date: Date
 ): Promise<schema.XSTRK_HOLDING_TYPE | null> {
-  const timestamp = Math.floor(date.getTime() / 1000);
-  const url = `${API_BASE_URL}/${userAddr}/${timestamp}`;
+  let retries = 0;
 
-  try {
-    const response = await axios.get(url);
-    const data = response.data;
+  while (retries < MAX_RETRIES) {
+    try {
+      const timestamp = Math.floor(date.getTime() / 1000);
+      const url = `${API_BASE_URL}/${userAddr}/${timestamp}`;
 
-    if (!data.blocks || !data.blocks[0]) {
-      console.warn(
-        `Invalid data format for user ${userAddr} on date: ${date.toISOString().split("T")[0]}`
+      const response = await axios.get(url);
+      const data = response.data;
+
+      if (!data.blocks || !data.blocks[0]) {
+        console.warn(
+          `Invalid data format for user ${userAddr} on date: ${date.toISOString().split("T")[0]}`
+        );
+        return null;
+      }
+
+      const vesuAmount = Number(
+        data.vesu[0].xSTRKAmount.bigNumber /
+          10 ** data.vesu[0].xSTRKAmount.decimals
       );
-      return null;
+      const ekuboAmount = Number(
+        data.ekubo[0].xSTRKAmount.bigNumber /
+          10 ** data.ekubo[0].xSTRKAmount.decimals
+      );
+      const nostraLendingAmount = Number(
+        data.nostraLending[0].xSTRKAmount.bigNumber /
+          10 ** data.nostraLending[0].xSTRKAmount.decimals
+      );
+      const nostraDexAmount = Number(
+        data.nostraDex[0].xSTRKAmount.bigNumber /
+          10 ** data.nostraDex[0].xSTRKAmount.decimals
+      );
+      const walletAmount = Number(
+        data.wallet[0].xSTRKAmount.bigNumber /
+          10 ** data.wallet[0].xSTRKAmount.decimals
+      );
+      const totalAmount =
+        vesuAmount +
+        ekuboAmount +
+        nostraLendingAmount +
+        nostraDexAmount +
+        walletAmount;
+
+      return {
+        userAddress: userAddr,
+        blockNumber: Number(data.blocks[0].block),
+        vesuAmount: vesuAmount.toString(),
+        ekuboAmount: ekuboAmount.toString(),
+        nostraLendingAmount: nostraLendingAmount.toString(),
+        nostraDexAmount: nostraDexAmount.toString(),
+        walletAmount: walletAmount.toString(),
+        totalAmount: totalAmount.toString(),
+        date: date.toISOString().split("T")[0],
+        timestamp: timestamp,
+      };
+    } catch (error) {
+      retries++;
+      if (retries >= MAX_RETRIES) {
+        console.error(
+          `Failed after ${MAX_RETRIES} attempts for user ${userAddr} on date ${date.toISOString().split("T")[0]}: ${error.message}`
+        );
+        return null;
+      }
+      console.warn(
+        `Attempt ${retries}/${MAX_RETRIES} failed for user ${userAddr} on date ${date.toISOString().split("T")[0]}: ${error.message}. Retrying in ${RETRY_DELAY / 1000}s...`
+      );
+      await sleep(RETRY_DELAY);
     }
-
-    const vesuAmount = Number(
-      data.vesu[0].xSTRKAmount.bigNumber /
-        10 ** data.vesu[0].xSTRKAmount.decimals
-    );
-    const ekuboAmount = Number(
-      data.ekubo[0].xSTRKAmount.bigNumber /
-        10 ** data.ekubo[0].xSTRKAmount.decimals
-    );
-    const nostraLendingAmount = Number(
-      data.nostraLending[0].xSTRKAmount.bigNumber /
-        10 ** data.nostraLending[0].xSTRKAmount.decimals
-    );
-    const nostraDexAmount = Number(
-      data.nostraDex[0].xSTRKAmount.bigNumber /
-        10 ** data.nostraDex[0].xSTRKAmount.decimals
-    );
-    const walletAmount = Number(
-      data.wallet[0].xSTRKAmount.bigNumber /
-        10 ** data.wallet[0].xSTRKAmount.decimals
-    );
-    const totalAmount =
-      vesuAmount +
-      ekuboAmount +
-      nostraLendingAmount +
-      nostraDexAmount +
-      walletAmount;
-
-    return {
-      userAddress: userAddr,
-      blockNumber: Number(data.blocks[0].block),
-      vesuAmount: vesuAmount.toString(),
-      ekuboAmount: ekuboAmount.toString(),
-      nostraLendingAmount: nostraLendingAmount.toString(),
-      nostraDexAmount: nostraDexAmount.toString(),
-      walletAmount: walletAmount.toString(),
-      totalAmount: totalAmount.toString(),
-      date: date.toISOString().split("T")[0],
-      timestamp: timestamp,
-    };
-  } catch (error) {
-    console.error(
-      `Error fetching data for user ${userAddr} on date ${date.toISOString().split("T")[0]}: ${error.message}`
-    );
-    return null;
   }
+
+  return null; // should never reach here but TypeScript needs this
 }
 
 async function processUserHoldings(userAddr: string): Promise<number> {
   console.log(`Processing holdings for user: ${userAddr}`);
-
   const startDate = new Date("2024-12-26");
   const endDate = new Date();
 
-  // get all dates in the range
+  // generate all dates in the range
   const dates: Date[] = [];
   let currentDate = new Date(startDate);
 
@@ -117,9 +135,7 @@ async function processUserHoldings(userAddr: string): Promise<number> {
 
     // process batch concurrently with rate limiting
     const results = await Promise.all(
-      batch.map((date) =>
-        limit(() => fetchHoldingsForDateAndUser(date, userAddr))
-      )
+      batch.map((date) => limit(() => fetchHoldingsWithRetry(userAddr, date)))
     );
 
     // filter out null results and insert valid data
@@ -134,7 +150,7 @@ async function processUserHoldings(userAddr: string): Promise<number> {
       );
     }
 
-    // add a delay between batches
+    // add a delay between batches to avoid overwhelming the API
     if (i + BATCH_SIZE < datesToProcess.length) {
       await new Promise((resolve) => setTimeout(resolve, 1000));
     }
