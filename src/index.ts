@@ -103,7 +103,7 @@ async function getAllTasks(): Promise<[string, Date][]> {
 
   console.log(`Found ${allUsers.length} users to process`);
 
-  const startDate = new Date("2024-12-26");
+  const startDate = new Date("2024-11-24");
   const endDate = new Date();
 
   const allTasks: [string, Date][] = [];
